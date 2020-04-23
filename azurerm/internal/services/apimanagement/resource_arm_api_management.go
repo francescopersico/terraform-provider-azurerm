@@ -63,6 +63,14 @@ func resourceArmApiManagementService() *schema.Resource {
 				},
 			},
 
+			"private_ip_addresses": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+			},
+
 			"publisher_name": {
 				Type:         schema.TypeString,
 				Required:     true,
@@ -106,6 +114,32 @@ func resourceArmApiManagementService() *schema.Resource {
 						"tenant_id": {
 							Type:     schema.TypeString,
 							Computed: true,
+						},
+					},
+				},
+			},
+
+			"virtual_network_type": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+				ValidateFunc: validation.StringInSlice([]string{
+					string(apimanagement.VirtualNetworkTypeNone),
+					string(apimanagement.VirtualNetworkTypeExternal),
+					string(apimanagement.VirtualNetworkTypeInternal),
+				}, false),
+			},
+
+			"virtual_network_configuration": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"subnet_id": {
+							Type:     schema.TypeString,
+							Required: true,
+							ForceNew: true,
 						},
 					},
 				},
@@ -413,6 +447,7 @@ func resourceArmApiManagementServiceCreateUpdate(d *schema.ResourceData, meta in
 	publisherName := d.Get("publisher_name").(string)
 	publisherEmail := d.Get("publisher_email").(string)
 	notificationSenderEmail := d.Get("notification_sender_email").(string)
+	virtualNetworkType := d.Get("virtual_network_type").(string)
 
 	customProperties := expandApiManagementCustomProperties(d)
 	certificates := expandAzureRmApiManagementCertificates(d)
@@ -441,6 +476,18 @@ func resourceArmApiManagementServiceCreateUpdate(d *schema.ResourceData, meta in
 
 	if notificationSenderEmail != "" {
 		properties.ServiceProperties.NotificationSenderEmail = &notificationSenderEmail
+	}
+
+	if virtualNetworkType != "" {
+		properties.ServiceProperties.VirtualNetworkType = apimanagement.VirtualNetworkType(virtualNetworkType)
+
+		if virtualNetworkType != string(apimanagement.VirtualNetworkTypeNone) {
+			virtualNetworkConfiguration := expandAzureRmApiManagementVirtualNetworkConfigurations(d)
+			if virtualNetworkConfiguration == nil {
+				return fmt.Errorf("You must specify 'virtual_network_configuration' when 'virtual_network_type' is %q", virtualNetworkType)
+			}
+			properties.ServiceProperties.VirtualNetworkConfiguration = virtualNetworkConfiguration
+		}
 	}
 
 	future, err := client.CreateOrUpdate(ctx, resourceGroup, name, properties)
@@ -569,6 +616,8 @@ func resourceArmApiManagementServiceRead(d *schema.ResourceData, meta interface{
 		d.Set("management_api_url", props.ManagementAPIURL)
 		d.Set("scm_url", props.ScmURL)
 		d.Set("public_ip_addresses", props.PublicIPAddresses)
+		d.Set("private_ip_addresses", props.PrivateIPAddresses)
+		d.Set("virtual_network_type", props.VirtualNetworkType)
 
 		if err := d.Set("security", flattenApiManagementSecurityCustomProperties(props.CustomProperties)); err != nil {
 			return fmt.Errorf("Error setting `security`: %+v", err)
@@ -585,6 +634,10 @@ func resourceArmApiManagementServiceRead(d *schema.ResourceData, meta interface{
 
 		if err := d.Set("additional_location", flattenApiManagementAdditionalLocations(props.AdditionalLocations)); err != nil {
 			return fmt.Errorf("Error setting `additional_location`: %+v", err)
+		}
+
+		if err := d.Set("virtual_network_configuration", flattenApiManagementVirtualNetworkConfiguration(props.VirtualNetworkConfiguration)); err != nil {
+			return fmt.Errorf("Error setting `virtual_network_configuration`: %+v", err)
 		}
 	}
 
@@ -939,6 +992,20 @@ func expandApiManagementCustomProperties(d *schema.ResourceData) map[string]*str
 	return customProperties
 }
 
+func expandAzureRmApiManagementVirtualNetworkConfigurations(d *schema.ResourceData) *apimanagement.VirtualNetworkConfiguration {
+	vs := d.Get("virtual_network_configuration").([]interface{})
+	if len(vs) == 0 {
+		return nil
+	}
+
+	v := vs[0].(map[string]interface{})
+	subnetResourceId := v["subnet_id"].(string)
+
+	return &apimanagement.VirtualNetworkConfiguration{
+		SubnetResourceID: &subnetResourceId,
+	}
+}
+
 func flattenApiManagementSecurityCustomProperties(input map[string]*string) []interface{} {
 	output := make(map[string]interface{})
 
@@ -959,6 +1026,20 @@ func flattenApiManagementProtocolsCustomProperties(input map[string]*string) []i
 	output["enable_http2"] = parseApiManagementNilableDictionary(input, apimHttp2Protocol)
 
 	return []interface{}{output}
+}
+
+func flattenApiManagementVirtualNetworkConfiguration(input *apimanagement.VirtualNetworkConfiguration) []interface{} {
+	if input == nil {
+		return []interface{}{}
+	}
+
+	virtualNetworkConfiguration := make(map[string]interface{})
+
+	if input.SubnetResourceID != nil {
+		virtualNetworkConfiguration["subnet_id"] = *input.SubnetResourceID
+	}
+
+	return []interface{}{virtualNetworkConfiguration}
 }
 
 func apiManagementResourceHostnameSchema(schemaName string) map[string]*schema.Schema {
